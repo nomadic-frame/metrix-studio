@@ -37,25 +37,25 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <SidebarProvider style={style as React.CSSProperties}>
-          <div className="flex h-screen w-full">
-            <AppSidebar />
-            <div className="flex flex-col flex-1 min-w-0">
-              <header className="flex items-center gap-2 px-4 py-2 border-b border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
-                <SidebarTrigger data-testid="button-sidebar-toggle" />
-                <div className="flex items-center gap-2 ml-auto">
-                  <span className="text-xs text-muted-foreground font-mono tracking-wider">METRIX v1.0</span>
-                </div>
-              </header>
-              <main className="flex-1 overflow-auto">
-                <Router hook={useHashLocation}>
+        <Router hook={useHashLocation}>
+          <SidebarProvider style={style as React.CSSProperties}>
+            <div className="flex h-screen w-full">
+              <AppSidebar />
+              <div className="flex flex-col flex-1 min-w-0">
+                <header className="flex items-center gap-2 px-4 py-2 border-b border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
+                  <SidebarTrigger data-testid="button-sidebar-toggle" />
+                  <div className="flex items-center gap-2 ml-auto">
+                    <span className="text-xs text-muted-foreground font-mono tracking-wider">METRIX v1.0</span>
+                  </div>
+                </header>
+                <main className="flex-1 overflow-auto">
                   <AppRouter />
-                </Router>
-              </main>
+                </main>
+              </div>
             </div>
-          </div>
-        </SidebarProvider>
-        <Toaster />
+          </SidebarProvider>
+          <Toaster />
+        </Router>
       </TooltipProvider>
     </QueryClientProvider>
   );

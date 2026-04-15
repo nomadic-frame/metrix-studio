@@ -526,8 +526,12 @@ export default function ProjectView() {
               {scenesData.length} scenes · {promptsData.length} prompts · {chars.length} characters
             </p>
             <div className="flex flex-wrap gap-2">
-              <CopyButton text={allPromptsText} label="all-prompts" />
-              <CopyButton text={JSON.stringify(exportData, null, 2)} label="json-export" />
+              <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => { navigator.clipboard.writeText(allPromptsText); }} data-testid="button-copy-all-prompts">
+                <Copy className="w-3 h-3" /> Copy All Prompts
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => { navigator.clipboard.writeText(JSON.stringify(exportData, null, 2)); }} data-testid="button-copy-json">
+                <Download className="w-3 h-3" /> Copy JSON Package
+              </Button>
               <a href="https://www.higgsfield.ai" target="_blank" rel="noopener noreferrer">
                 <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs">
                   <ExternalLink className="w-3 h-3" /> Open Higgsfield
