@@ -174,51 +174,129 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
-  // ─── Higgsfield API Proxy (for API-available models) ───
+  // ─── Higgsfield API ───
+
+  // Validate API key
+  app.post("/api/validate-key", async (req, res) => {
+    const { apiKey } = req.body;
+    if (!apiKey) return res.status(400).json({ valid: false, error: "No key provided" });
+    try {
+      const response = await fetch("https://api.higgsfield.ai/v1/generations", {
+        method: "GET",
+        headers: { "Authorization": `Bearer ${apiKey}` },
+      });
+      res.json({ valid: response.ok || response.status === 422 });
+    } catch (err: any) {
+      res.json({ valid: false, error: err.message });
+    }
+  });
+
+  // POST /api/generate/image — kicks off text-to-image, updates prompt record
   app.post("/api/generate/image", async (req, res) => {
     const apiKey = await storage.getSetting("higgsfield_api_key");
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
 
+    const { promptId, model, prompt, width = 1280, height = 720 } = req.body;
+
     try {
       const response = await fetch("https://api.higgsfield.ai/v1/generations", {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "text-to-image", ...req.body }),
+        body: JSON.stringify({ task: "text-to-image", model: model || "flux-2-pro", prompt, width, height }),
       });
-      const data = await response.json();
-      res.json(data);
+      const data = await response.json() as any;
+      if (!response.ok) return res.status(response.status).json({ error: data.message || data.error || "Higgsfield error" });
+
+      const generationId: string = data.id || data.generation_id;
+      if (promptId) {
+        await storage.updatePrompt(Number(promptId), { status: "generating", generationId });
+      }
+      res.json({ generationId, status: "generating" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
+  // POST /api/generate/video — kicks off image-to-video, updates prompt record
   app.post("/api/generate/video", async (req, res) => {
     const apiKey = await storage.getSetting("higgsfield_api_key");
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
 
+    const { promptId, model, prompt, inputImage, duration = 5, fps = 24 } = req.body;
+
     try {
       const response = await fetch("https://api.higgsfield.ai/v1/generations", {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "image-to-video", ...req.body }),
+        body: JSON.stringify({ task: "image-to-video", model: model || "kling-3.0-standard", prompt, input_image: inputImage, duration, fps }),
       });
-      const data = await response.json();
-      res.json(data);
+      const data = await response.json() as any;
+      if (!response.ok) return res.status(response.status).json({ error: data.message || data.error || "Higgsfield error" });
+
+      const generationId: string = data.id || data.generation_id;
+      if (promptId) {
+        await storage.updatePrompt(Number(promptId), { status: "generating", generationId });
+      }
+      res.json({ generationId, status: "generating" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/generations/:id", async (req, res) => {
+  // GET /api/generate/status/:genId — poll Higgsfield, update prompt if complete
+  app.get("/api/generate/status/:genId", async (req, res) => {
     const apiKey = await storage.getSetting("higgsfield_api_key");
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
 
+    const { promptId } = req.query;
+
     try {
-      const response = await fetch(`https://api.higgsfield.ai/v1/generations/${req.params.id}`, {
+      const response = await fetch(`https://api.higgsfield.ai/v1/generations/${req.params.genId}`, {
         headers: { "Authorization": `Bearer ${apiKey}` },
       });
-      const data = await response.json();
-      res.json(data);
+      const data = await response.json() as any;
+      if (!response.ok) return res.status(response.status).json({ error: data.message || "Higgsfield error" });
+
+      const status: string = data.status;
+      const outputUrl: string | undefined = data.output_url || data.url || data.result?.url;
+
+      if (status === "completed" && outputUrl && promptId) {
+        await storage.updatePrompt(Number(promptId), { status: "complete", generatedUrl: outputUrl });
+      }
+
+      res.json({ status, outputUrl: outputUrl || null });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/upload/soul-id — upload reference image, returns soulId
+  app.post("/api/upload/soul-id", async (req, res) => {
+    const apiKey = await storage.getSetting("higgsfield_api_key");
+    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
+
+    const { characterId, imageBase64, filename = "reference.jpg" } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: "imageBase64 is required" });
+
+    try {
+      const buffer = Buffer.from(imageBase64, "base64");
+      const formData = new FormData();
+      const blob = new Blob([buffer], { type: "image/jpeg" });
+      formData.append("file", blob, filename);
+
+      const response = await fetch("https://api.higgsfield.ai/v1/soul-id", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiKey}` },
+        body: formData,
+      });
+      const data = await response.json() as any;
+      if (!response.ok) return res.status(response.status).json({ error: data.message || "Soul ID upload failed" });
+
+      const soulId: string = data.soul_id || data.id;
+      if (characterId && soulId) {
+        await storage.updateCharacter(Number(characterId), { soulId });
+      }
+      res.json({ soulId });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLocation, useParams } from "wouter";
@@ -15,7 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft, Plus, Copy, Check, Trash2, Wand2, ExternalLink,
-  Camera, Film, Clapperboard, FileText, Download, User, Loader2
+  Camera, Film, Clapperboard, FileText, Download, User, Loader2, Zap, Upload
 } from "lucide-react";
 
 // ─── Copy button helper ───
@@ -67,12 +67,17 @@ function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated:
 
   const mutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/characters", { ...form, projectId, saved: 0 });
+      const r = await apiRequest("POST", "/api/characters", { ...form, projectId, saved: 0 });
+      return r.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "characters"] });
       onCreated();
       setForm({ name: "", genre: "Drama", budget: "Medium", era: "2020s", archetype: "Everyman", gender: "", ethnicity: "", ageRange: "", height: "", build: "", eyeColor: "", hair: "", facialHair: "", details: "", outfit: "" });
       toast({ title: "Character added" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to add character", description: err.message, variant: "destructive" });
     },
   });
 
@@ -157,8 +162,36 @@ function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated:
 }
 
 // ─── Character Card ───
-function CharacterCard({ char, onDelete, onSave }: { char: Character; onDelete: () => void; onSave: () => void }) {
+function CharacterCard({ char, onDelete, onSave, onRefresh }: { char: Character; onDelete: () => void; onSave: () => void; onRefresh: () => void }) {
+  const { toast } = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
   const spec = `Genre: ${char.genre}\nBudget: ${char.budget}\nEra: ${char.era}\nArchetype: ${char.archetype}\nIdentity: ${[char.gender, char.ethnicity, char.ageRange].filter(Boolean).join(", ")}\nPhysical: ${[char.height, char.build, char.eyeColor, char.hair, char.facialHair].filter(Boolean).join(", ")}\nDetails: ${char.details || "None"}\nOutfit: ${char.outfit || "Not specified"}`;
+
+  const handleSoulIdUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = (reader.result as string).split(",")[1];
+        const r = await apiRequest("POST", "/api/upload/soul-id", {
+          characterId: char.id,
+          imageBase64: base64,
+          filename: file.name,
+        });
+        const data = await r.json() as { soulId?: string; error?: string };
+        if (data.error) throw new Error(data.error);
+        onRefresh();
+        toast({ title: "Soul ID uploaded", description: `ID: ${data.soulId}` });
+      };
+      reader.onerror = () => { throw new Error("Failed to read file"); };
+      reader.readAsDataURL(file);
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <Card className="p-4 border-border/50" data-testid={`card-character-${char.id}`}>
@@ -169,9 +202,32 @@ function CharacterCard({ char, onDelete, onSave }: { char: Character; onDelete: 
           </div>
           <span className="font-semibold text-sm">{char.name}</span>
           <Badge variant="outline" className="text-[10px] px-1.5 py-0">{char.archetype}</Badge>
+          {char.soulId && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 border-primary/40 text-primary cursor-pointer font-mono"
+              onClick={() => navigator.clipboard.writeText(char.soulId!)}
+              title="Click to copy Soul ID"
+              data-testid={`badge-soul-id-${char.id}`}
+            >
+              Soul ID: {char.soulId.substring(0, 8)}…
+            </Badge>
+          )}
         </div>
         <div className="flex gap-1">
           <CopyButton text={spec} label={`char-${char.id}`} />
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => e.target.files?.[0] && handleSoulIdUpload(e.target.files[0])} />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs gap-1 text-muted-foreground"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            data-testid={`button-soul-id-${char.id}`}
+          >
+            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+            {uploading ? "Uploading…" : "Soul ID"}
+          </Button>
           <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={onSave} data-testid={`button-save-char-${char.id}`}>
             {char.saved ? "Saved" : "Save to Library"}
           </Button>
@@ -229,7 +285,11 @@ export default function ProjectView() {
 
   const saveCharMutation = useMutation({
     mutationFn: (id: number) => apiRequest("PATCH", `/api/characters/${id}`, { saved: 1 }),
-    onSuccess: () => { refetchChars(); toast({ title: "Saved to character library" }); },
+    onSuccess: () => {
+      refetchChars();
+      queryClient.invalidateQueries({ queryKey: ["/api/characters/saved"] });
+      toast({ title: "Saved to character library" });
+    },
   });
 
   const updatePromptStatusMutation = useMutation({
@@ -362,6 +422,7 @@ export default function ProjectView() {
                   char={c}
                   onDelete={() => deleteCharMutation.mutate(c.id)}
                   onSave={() => saveCharMutation.mutate(c.id)}
+                  onRefresh={() => refetchChars()}
                 />
               ))}
             </div>
@@ -453,7 +514,7 @@ export default function ProjectView() {
                 </h2>
                 <div className="space-y-2">
                   {imagePrompts.map((p) => (
-                    <PromptCard key={p.id} prompt={p} onStatusChange={(s) => updatePromptStatusMutation.mutate({ id: p.id, status: s })} />
+                    <PromptCard key={p.id} prompt={p} onStatusChange={(s) => updatePromptStatusMutation.mutate({ id: p.id, status: s })} onRefresh={refetchPrompts} />
                   ))}
                 </div>
               </div>
@@ -465,7 +526,7 @@ export default function ProjectView() {
                 </h2>
                 <div className="space-y-2">
                   {videoPrompts.map((p) => (
-                    <PromptCard key={p.id} prompt={p} onStatusChange={(s) => updatePromptStatusMutation.mutate({ id: p.id, status: s })} />
+                    <PromptCard key={p.id} prompt={p} onStatusChange={(s) => updatePromptStatusMutation.mutate({ id: p.id, status: s })} onRefresh={refetchPrompts} />
                   ))}
                 </div>
               </div>
@@ -563,30 +624,90 @@ export default function ProjectView() {
 }
 
 // ─── Prompt Card Component ───
-function PromptCard({ prompt, onStatusChange }: { prompt: Prompt; onStatusChange: (s: string) => void }) {
+function PromptCard({ prompt, onStatusChange, onRefresh }: { prompt: Prompt; onStatusChange: (s: string) => void; onRefresh: () => void }) {
+  const { toast } = useToast();
+  const [generating, setGenerating] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  useEffect(() => {
+    if (prompt.status === "generating" && prompt.generationId) {
+      setGenerating(true);
+      pollRef.current = setInterval(async () => {
+        try {
+          const r = await apiRequest("GET", `/api/generate/status/${prompt.generationId}?promptId=${prompt.id}`);
+          const data = await r.json() as { status: string; outputUrl?: string };
+          if (data.status === "completed") {
+            stopPolling();
+            setGenerating(false);
+            onRefresh();
+          }
+        } catch { stopPolling(); setGenerating(false); }
+      }, 2000);
+    } else {
+      setGenerating(false);
+    }
+    return stopPolling;
+  }, [prompt.status, prompt.generationId, prompt.id, stopPolling, onRefresh]);
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const r = await apiRequest("POST", "/api/generate/image", {
+        promptId: prompt.id,
+        model: prompt.model,
+        prompt: prompt.promptText,
+      });
+      const data = await r.json() as { generationId?: string; error?: string };
+      if (data.error) throw new Error(data.error);
+      onRefresh();
+    } catch (err: any) {
+      setGenerating(false);
+      toast({ title: "Generation failed", description: err.message, variant: "destructive" });
+    }
+  };
+
   const statusColors: Record<string, string> = {
     pending: "bg-muted text-muted-foreground",
+    generating: "bg-blue-500/20 text-blue-400",
+    complete: "bg-emerald-500/20 text-emerald-400",
     generated: "bg-blue-500/20 text-blue-400",
     approved: "bg-emerald-500/20 text-emerald-400",
   };
-  const nextStatus: Record<string, string> = { pending: "generated", generated: "approved", approved: "pending" };
+  const nextStatus: Record<string, string> = { pending: "generated", generated: "approved", approved: "pending", complete: "approved" };
 
   return (
     <Card className="p-3 border-border/50" data-testid={`card-prompt-${prompt.id}`}>
       <div className="flex items-center gap-2 mb-2">
         <Badge
           variant="outline"
-          className={`text-[10px] px-1.5 py-0 cursor-pointer ${statusColors[prompt.status]}`}
-          onClick={() => onStatusChange(nextStatus[prompt.status])}
+          className={`text-[10px] px-1.5 py-0 cursor-pointer ${statusColors[prompt.status] || statusColors.pending}`}
+          onClick={() => !generating && onStatusChange(nextStatus[prompt.status] || "generated")}
           data-testid={`badge-status-${prompt.id}`}
         >
-          {prompt.status}
+          {generating ? <Loader2 className="w-2.5 h-2.5 animate-spin inline mr-1" /> : null}
+          {generating ? "generating" : prompt.status}
         </Badge>
         <ModelBadge model={prompt.model} isApi={!!prompt.isApiAvailable} />
         {prompt.sceneId && <span className="text-[10px] text-muted-foreground font-mono">Scene #{prompt.sceneId}</span>}
         <div className="ml-auto flex gap-1">
           <CopyButton text={prompt.promptText} label={`prompt-${prompt.id}`} />
-          {!prompt.isApiAvailable && (
+          {prompt.isApiAvailable ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 text-xs text-primary"
+              onClick={handleGenerate}
+              disabled={generating || prompt.status === "generating"}
+              data-testid={`button-generate-${prompt.id}`}
+            >
+              {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+              {generating ? "Generating…" : "Generate"}
+            </Button>
+          ) : (
             <a href="https://www.higgsfield.ai" target="_blank" rel="noopener noreferrer">
               <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs text-amber-400">
                 <ExternalLink className="w-3 h-3" /> Copy to Higgsfield
@@ -596,6 +717,16 @@ function PromptCard({ prompt, onStatusChange }: { prompt: Prompt; onStatusChange
         </div>
       </div>
       <pre className="text-xs font-mono text-muted-foreground bg-muted/30 rounded p-2 whitespace-pre-wrap leading-relaxed">{prompt.promptText}</pre>
+      {prompt.generatedUrl && (
+        <div className="mt-2">
+          <img
+            src={prompt.generatedUrl}
+            alt="Generated"
+            className="rounded max-h-48 object-contain border border-border/30"
+            data-testid={`img-generated-${prompt.id}`}
+          />
+        </div>
+      )}
     </Card>
   );
 }

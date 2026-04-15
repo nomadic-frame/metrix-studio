@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Save, Key, Monitor, ExternalLink, Loader2 } from "lucide-react";
+import { Save, Key, Monitor, ExternalLink, Loader2, CheckCircle2, XCircle } from "lucide-react";
 
 export default function SettingsPage() {
   const { toast } = useToast();
@@ -21,6 +21,7 @@ export default function SettingsPage() {
   const [defaultAspectRatio, setDefaultAspectRatio] = useState("16:9");
   const [defaultDuration, setDefaultDuration] = useState("15s");
   const [preferredModel, setPreferredModel] = useState("kling-3.0");
+  const [keyValid, setKeyValid] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -28,6 +29,7 @@ export default function SettingsPage() {
       setDefaultAspectRatio(settings.default_aspect_ratio || "16:9");
       setDefaultDuration(settings.default_duration || "15s");
       setPreferredModel(settings.preferred_model || "kling-3.0");
+      setKeyValid(settings.higgsfield_api_key ? null : null);
     }
   }, [settings]);
 
@@ -36,10 +38,20 @@ export default function SettingsPage() {
       for (const p of pairs) {
         await apiRequest("POST", "/api/settings", p);
       }
+      // Validate key after saving
+      if (apiKey) {
+        const r = await apiRequest("POST", "/api/validate-key", { apiKey });
+        return r.json();
+      }
+      return { valid: false };
     },
-    onSuccess: () => {
+    onSuccess: (data: { valid: boolean }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
-      toast({ title: "Settings saved" });
+      setKeyValid(apiKey ? data.valid : null);
+      toast({ title: "Settings saved", description: apiKey ? (data.valid ? "API key is valid" : "API key is invalid") : undefined });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to save settings", description: err.message, variant: "destructive" });
     },
   });
 
@@ -64,9 +76,21 @@ export default function SettingsPage() {
         <div className="flex items-center gap-2">
           <Key className="w-4 h-4 text-primary" />
           <h2 className="text-sm font-semibold">Higgsfield API</h2>
-          <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-auto">
-            {apiKey ? "Connected" : "Not configured"}
-          </Badge>
+          {keyValid === true && (
+            <div className="ml-auto flex items-center gap-1 text-emerald-400 text-xs">
+              <CheckCircle2 className="w-3.5 h-3.5" /> API Connected
+            </div>
+          )}
+          {keyValid === false && (
+            <div className="ml-auto flex items-center gap-1 text-destructive text-xs">
+              <XCircle className="w-3.5 h-3.5" /> Invalid Key
+            </div>
+          )}
+          {keyValid === null && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-auto">
+              {apiKey ? "Not validated" : "Not configured"}
+            </Badge>
+          )}
         </div>
         <p className="text-xs text-muted-foreground">
           Required for API-available models (Flux 2 Pro, Kling 3.0, Soul ID, etc.). UI-only models (Seedance 2.0, Cinema Studio 2.5) don't need an API key.

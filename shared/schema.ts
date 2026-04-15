@@ -43,6 +43,7 @@ export const characters = sqliteTable("characters", {
   details: text("details").notNull().default(""),
   outfit: text("outfit").notNull().default(""),
   saved: integer("saved").notNull().default(0), // 0 or 1, for character library
+  soulId: text("soul_id").notNull().default(""),
 });
 
 export const insertCharacterSchema = createInsertSchema(characters).omit({ id: true });
@@ -80,7 +81,9 @@ export const prompts = sqliteTable("prompts", {
   model: text("model").notNull(), // flux-2-pro, kling-3.0, seedance-2.0, etc.
   promptText: text("prompt_text").notNull(),
   isApiAvailable: integer("is_api_available").notNull().default(0), // 0 or 1
-  status: text("status").notNull().default("pending"), // pending | generated | approved
+  status: text("status").notNull().default("pending"), // pending | generating | complete | generated | approved
+  generationId: text("generation_id").notNull().default(""),
+  generatedUrl: text("generated_url").notNull().default(""),
 });
 
 export const insertPromptSchema = createInsertSchema(prompts).omit({ id: true });
