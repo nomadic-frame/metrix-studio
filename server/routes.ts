@@ -3,6 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProjectSchema, insertCharacterSchema, insertSceneSchema, insertPromptSchema, insertPromptLibrarySchema } from "@shared/schema";
 import { generateScenes, generatePrompts } from "./prompt-engine";
+import fs from "fs";
+import path from "path";
+import archiver from "archiver";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -243,12 +246,12 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/generate/status/:genId — poll Higgsfield, update prompt if complete
+  // GET /api/generate/status/:genId — poll Higgsfield, update prompt if complete, optionally download asset
   app.get("/api/generate/status/:genId", async (req, res) => {
     const apiKey = await storage.getSetting("higgsfield_api_key");
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
 
-    const { promptId } = req.query;
+    const { promptId, projectId, sceneNumber, assetType } = req.query;
 
     try {
       const response = await fetch(`https://api.higgsfield.ai/v1/generations/${req.params.genId}`, {
@@ -262,6 +265,13 @@ export async function registerRoutes(
 
       if (status === "completed" && outputUrl && promptId) {
         await storage.updatePrompt(Number(promptId), { status: "complete", generatedUrl: outputUrl });
+
+        // Download asset to disk if project context is provided
+        if (projectId && sceneNumber) {
+          const ext = (assetType === "video") ? "mp4" : "jpg";
+          const localPath = await downloadAsset(outputUrl, Number(projectId), Number(sceneNumber), ext);
+          return res.json({ status, outputUrl, localPath });
+        }
       }
 
       res.json({ status, outputUrl: outputUrl || null });
@@ -302,5 +312,85 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Phase 2: Export + Webhooks ───
+
+  // GET /api/projects/:id/export/zip — bundle all generated assets into a ZIP
+  app.get("/api/projects/:id/export/zip", async (req, res) => {
+    const projectId = Number(req.params.id);
+    const project = await storage.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const prompts = await storage.getPromptsByProject(projectId);
+    const uploadsDir = path.resolve("uploads", `project_${projectId}`);
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${project.name.replace(/\s+/g, "_")}_export.zip"`);
+
+    const zip = archiver("zip", { zlib: { level: 6 } });
+    zip.on("error", (err) => res.destroy(err));
+    zip.pipe(res);
+
+    // Add manifest JSON
+    const scenes = await storage.getScenesByProject(projectId);
+    const characters = await storage.getCharactersByProject(projectId);
+    const manifest = { project, scenes, characters, prompts };
+    zip.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
+
+    // Add all prompts as text
+    const promptsText = prompts.map(p => `[${p.type.toUpperCase()} — ${p.model}]\n${p.promptText}`).join("\n\n---\n\n");
+    zip.append(promptsText, { name: "prompts.txt" });
+
+    // Add downloaded asset files if they exist
+    if (fs.existsSync(uploadsDir)) {
+      zip.directory(uploadsDir, "assets");
+    }
+
+    await zip.finalize();
+  });
+
+  // POST /api/webhooks/higgsfield — async completion callbacks from Higgsfield
+  app.post("/api/webhooks/higgsfield", async (req, res) => {
+    const { generation_id, status, output_url, metadata } = req.body;
+    res.json({ received: true });
+
+    if (status === "completed" && output_url && metadata?.promptId) {
+      try {
+        const promptId = Number(metadata.promptId);
+        await storage.updatePrompt(promptId, { status: "complete", generatedUrl: output_url });
+        if (metadata.projectId && metadata.sceneNumber) {
+          const ext = metadata.assetType === "video" ? "mp4" : "jpg";
+          await downloadAsset(output_url, Number(metadata.projectId), Number(metadata.sceneNumber), ext);
+        }
+      } catch (err) {
+        console.error("Webhook processing error:", err);
+      }
+    }
+  });
+
+  // Serve uploaded assets
+  app.use("/uploads", (req, res, next) => {
+    const uploadsDir = path.resolve("uploads");
+    const filePath = path.join(uploadsDir, req.path);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      res.sendFile(filePath);
+    } else {
+      next();
+    }
+  });
+
   return httpServer;
+}
+
+// ─── Helper: download asset to disk ───
+async function downloadAsset(url: string, projectId: number, sceneNumber: number, ext: string): Promise<string> {
+  const dir = path.resolve("uploads", `project_${projectId}`, `scene_${sceneNumber}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const filename = ext === "mp4" ? "video.mp4" : "image.jpg";
+  const filePath = path.join(dir, filename);
+
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to download asset: ${response.status}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  fs.writeFileSync(filePath, buffer);
+  return `/uploads/project_${projectId}/scene_${sceneNumber}/${filename}`;
 }

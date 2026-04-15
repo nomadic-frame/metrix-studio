@@ -581,45 +581,210 @@ export default function ProjectView() {
 
         {/* ─── EXPORT TAB ─── */}
         <TabsContent value="export" className="space-y-4 mt-4">
-          <Card className="p-4 border-border/50">
-            <h2 className="text-sm font-semibold mb-3">Production Package</h2>
-            <p className="text-sm text-muted-foreground mb-4">
-              {scenesData.length} scenes · {promptsData.length} prompts · {chars.length} characters
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => { navigator.clipboard.writeText(allPromptsText); }} data-testid="button-copy-all-prompts">
-                <Copy className="w-3 h-3" /> Copy All Prompts
-              </Button>
-              <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => { navigator.clipboard.writeText(JSON.stringify(exportData, null, 2)); }} data-testid="button-copy-json">
-                <Download className="w-3 h-3" /> Copy JSON Package
-              </Button>
-              <a href="https://www.higgsfield.ai" target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs">
-                  <ExternalLink className="w-3 h-3" /> Open Higgsfield
-                </Button>
-              </a>
-            </div>
-          </Card>
-
-          {/* Quick reference of all prompts */}
-          <div className="space-y-3">
-            {promptsData.map((p, i) => (
-              <Card key={p.id} className="p-3 border-border/50">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-mono text-muted-foreground">#{i + 1}</span>
-                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">{p.type}</Badge>
-                  <ModelBadge model={p.model} isApi={!!p.isApiAvailable} />
-                  <div className="ml-auto">
-                    <CopyButton text={p.promptText} label={`export-${p.id}`} />
-                  </div>
-                </div>
-                <pre className="text-xs font-mono text-muted-foreground bg-muted/30 rounded p-2 whitespace-pre-wrap line-clamp-3">{p.promptText}</pre>
-              </Card>
-            ))}
-          </div>
+          <ExportTab
+            project={project}
+            projectId={projectId}
+            scenesData={scenesData}
+            promptsData={promptsData}
+            chars={chars}
+            allPromptsText={allPromptsText}
+            exportData={exportData}
+            onRefreshPrompts={refetchPrompts}
+          />
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+// ─── Export Tab Component ───
+type ExportTabProps = {
+  project: Project;
+  projectId: number;
+  scenesData: Scene[];
+  promptsData: Prompt[];
+  chars: Character[];
+  allPromptsText: string;
+  exportData: object;
+  onRefreshPrompts: () => void;
+};
+
+function ExportTab({ project, projectId, scenesData, promptsData, chars, allPromptsText, exportData, onRefreshPrompts }: ExportTabProps) {
+  const { toast } = useToast();
+  const [batchState, setBatchState] = useState<Record<number, "idle" | "generating" | "done" | "error">>({});
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  const apiImagePrompts = promptsData.filter(p => p.type === "image" && p.isApiAvailable);
+  const apiVideoPrompts = promptsData.filter(p => p.type === "video" && p.isApiAvailable);
+  const completedImages = promptsData.filter(p => p.type === "image" && p.generatedUrl).length;
+  const completedVideos = promptsData.filter(p => p.type === "video" && p.generatedUrl).length;
+
+  const generateAndPoll = async (prompt: Prompt, type: "image" | "video"): Promise<void> => {
+    setBatchState(s => ({ ...s, [prompt.id]: "generating" }));
+    try {
+      const endpoint = type === "image" ? "/api/generate/image" : "/api/generate/video";
+      const body: Record<string, unknown> = { promptId: prompt.id, model: prompt.model, prompt: prompt.promptText };
+      if (type === "video" && prompt.sceneId) {
+        const sceneImagePrompt = promptsData.find(p2 => p2.sceneId === prompt.sceneId && p2.type === "image" && p2.generatedUrl);
+        if (sceneImagePrompt?.generatedUrl) body.inputImage = sceneImagePrompt.generatedUrl;
+      }
+      const r = await apiRequest("POST", endpoint, body);
+      const data = await r.json() as { generationId?: string; error?: string };
+      if (data.error) throw new Error(data.error);
+
+      // Poll until complete
+      const genId = data.generationId;
+      if (!genId) throw new Error("No generation ID returned");
+
+      await new Promise<void>((resolve, reject) => {
+        const interval = setInterval(async () => {
+          try {
+            const pollUrl = `/api/generate/status/${genId}?promptId=${prompt.id}` +
+              (prompt.sceneId ? `&projectId=${projectId}&sceneNumber=${prompt.sceneId}&assetType=${type}` : "");
+            const sr = await apiRequest("GET", pollUrl);
+            const sd = await sr.json() as { status: string };
+            if (sd.status === "completed") { clearInterval(interval); resolve(); }
+          } catch (e) { clearInterval(interval); reject(e); }
+        }, type === "video" ? 10000 : 2000);
+      });
+
+      setBatchState(s => ({ ...s, [prompt.id]: "done" }));
+      onRefreshPrompts();
+    } catch (err: any) {
+      setBatchState(s => ({ ...s, [prompt.id]: "error" }));
+      throw err;
+    }
+  };
+
+  const handleGenerateAll = async () => {
+    if (!apiImagePrompts.length) { toast({ title: "No API image prompts to generate", variant: "destructive" }); return; }
+    setBatchRunning(true);
+    let errors = 0;
+
+    // Step 1: generate all images
+    toast({ title: "Generating images…", description: `0 / ${apiImagePrompts.length}` });
+    for (const p of apiImagePrompts) {
+      try { await generateAndPoll(p, "image"); } catch { errors++; }
+    }
+    onRefreshPrompts();
+
+    // Step 2: generate videos using the image outputs
+    if (apiVideoPrompts.length) {
+      toast({ title: "Generating videos…", description: `0 / ${apiVideoPrompts.length}` });
+      for (const p of apiVideoPrompts) {
+        try { await generateAndPoll(p, "video"); } catch { errors++; }
+      }
+      onRefreshPrompts();
+    }
+
+    setBatchRunning(false);
+    toast({
+      title: errors ? `Done with ${errors} error(s)` : "All assets generated",
+      description: errors ? "Some generations failed — check individual prompts" : "Production package ready for export",
+    });
+  };
+
+  const batchStatusBg: Record<string, string> = {
+    idle: "bg-muted/30",
+    generating: "bg-blue-500/10 border-blue-500/30",
+    done: "bg-emerald-500/10 border-emerald-500/30",
+    error: "bg-destructive/10 border-destructive/30",
+  };
+
+  return (
+    <>
+      {/* Actions header */}
+      <Card className="p-4 border-border/50">
+        <h2 className="text-sm font-semibold mb-3">Production Package</h2>
+        <p className="text-xs text-muted-foreground mb-4">
+          {scenesData.length} scenes · {promptsData.length} prompts · {chars.length} characters ·
+          <span className="text-primary"> {completedImages} images</span> ·
+          <span className="text-primary"> {completedVideos} videos</span>
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={handleGenerateAll}
+            disabled={batchRunning || !apiImagePrompts.length}
+            data-testid="button-generate-all"
+          >
+            {batchRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+            {batchRunning ? "Generating…" : "Generate All"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={() => window.location.href = `/api/projects/${projectId}/export/zip`}
+            data-testid="button-download-zip"
+          >
+            <Download className="w-3 h-3" /> Download ZIP
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => navigator.clipboard.writeText(allPromptsText)} data-testid="button-copy-all-prompts">
+            <Copy className="w-3 h-3" /> Copy All Prompts
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => navigator.clipboard.writeText(JSON.stringify(exportData, null, 2))} data-testid="button-copy-json">
+            <Copy className="w-3 h-3" /> Copy JSON
+          </Button>
+        </div>
+      </Card>
+
+      {/* Scene grid with live progress */}
+      {scenesData.length > 0 && (
+        <div>
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Scene Grid</h2>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+            {scenesData.map((scene) => {
+              const imgPrompt = promptsData.find(p => p.sceneId === scene.id && p.type === "image");
+              const vidPrompt = promptsData.find(p => p.sceneId === scene.id && p.type === "video");
+              const imgState = imgPrompt ? (batchState[imgPrompt.id] || "idle") : "idle";
+              const vidState = vidPrompt ? (batchState[vidPrompt.id] || "idle") : "idle";
+              return (
+                <Card key={scene.id} className={`p-3 border text-xs ${batchStatusBg[imgState === "generating" ? "generating" : vidState === "generating" ? "generating" : imgState === "done" || vidState === "done" ? "done" : "idle"]}`} data-testid={`card-export-scene-${scene.id}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono font-bold text-muted-foreground">S{scene.sceneNumber}</span>
+                    <div className="flex gap-1">
+                      {imgState === "generating" && <Loader2 className="w-3 h-3 animate-spin text-blue-400" />}
+                      {imgState === "done" && <Check className="w-3 h-3 text-emerald-400" />}
+                      {vidState === "done" && <Film className="w-3 h-3 text-emerald-400" />}
+                    </div>
+                  </div>
+                  {imgPrompt?.generatedUrl ? (
+                    <img src={imgPrompt.generatedUrl} alt={`Scene ${scene.sceneNumber}`} className="w-full h-20 object-cover rounded mb-1.5 border border-border/20" />
+                  ) : (
+                    <div className="w-full h-20 bg-muted/30 rounded mb-1.5 flex items-center justify-center">
+                      {imgState === "generating" ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /> : <Camera className="w-4 h-4 text-muted-foreground/40" />}
+                    </div>
+                  )}
+                  {vidPrompt?.generatedUrl && (
+                    <video src={vidPrompt.generatedUrl} controls className="w-full rounded border border-border/20" style={{ maxHeight: "4rem" }} />
+                  )}
+                  <p className="text-[10px] text-muted-foreground line-clamp-2 mt-1">{scene.description}</p>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Quick prompt reference */}
+      <div className="space-y-2">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">All Prompts</h2>
+        {promptsData.map((p, i) => (
+          <Card key={p.id} className="p-3 border-border/50">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-xs font-mono text-muted-foreground">#{i + 1}</span>
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">{p.type}</Badge>
+              <ModelBadge model={p.model} isApi={!!p.isApiAvailable} />
+              {p.generatedUrl && <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-emerald-500/40 text-emerald-400">done</Badge>}
+              <div className="ml-auto"><CopyButton text={p.promptText} label={`export-${p.id}`} /></div>
+            </div>
+            <pre className="text-xs font-mono text-muted-foreground bg-muted/30 rounded p-2 whitespace-pre-wrap line-clamp-2">{p.promptText}</pre>
+          </Card>
+        ))}
+      </div>
+    </>
   );
 }
 
