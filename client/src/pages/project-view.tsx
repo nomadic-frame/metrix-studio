@@ -164,32 +164,30 @@ function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated:
 // ─── Character Card ───
 function CharacterCard({ char, onDelete, onSave, onRefresh }: { char: Character; onDelete: () => void; onSave: () => void; onRefresh: () => void }) {
   const { toast } = useToast();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
+  const [showSoulForm, setShowSoulForm] = useState(false);
+  const [soulImageUrl, setSoulImageUrl] = useState("");
+  const [creatingSoul, setCreatingSoul] = useState(false);
   const spec = `Genre: ${char.genre}\nBudget: ${char.budget}\nEra: ${char.era}\nArchetype: ${char.archetype}\nIdentity: ${[char.gender, char.ethnicity, char.ageRange].filter(Boolean).join(", ")}\nPhysical: ${[char.height, char.build, char.eyeColor, char.hair, char.facialHair].filter(Boolean).join(", ")}\nDetails: ${char.details || "None"}\nOutfit: ${char.outfit || "Not specified"}`;
 
-  const handleSoulIdUpload = async (file: File) => {
-    setUploading(true);
+  const handleCreateSoulId = async () => {
+    if (!soulImageUrl.trim()) return;
+    setCreatingSoul(true);
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(",")[1];
-        const r = await apiRequest("POST", "/api/upload/soul-id", {
-          characterId: char.id,
-          imageBase64: base64,
-          filename: file.name,
-        });
-        const data = await r.json() as { soulId?: string; error?: string };
-        if (data.error) throw new Error(data.error);
-        onRefresh();
-        toast({ title: "Soul ID uploaded", description: `ID: ${data.soulId}` });
-      };
-      reader.onerror = () => { throw new Error("Failed to read file"); };
-      reader.readAsDataURL(file);
+      const r = await apiRequest("POST", "/api/create-soul-id", {
+        characterId: char.id,
+        name: char.name,
+        imageUrls: [soulImageUrl.trim()],
+      });
+      const data = await r.json() as { soulId?: string; error?: string };
+      if (data.error) throw new Error(data.error);
+      setSoulImageUrl("");
+      setShowSoulForm(false);
+      onRefresh();
+      toast({ title: "Soul ID created", description: `ID: ${data.soulId}` });
     } catch (err: any) {
-      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+      toast({ title: "Soul ID failed", description: err.message, variant: "destructive" });
     } finally {
-      setUploading(false);
+      setCreatingSoul(false);
     }
   };
 
@@ -216,17 +214,15 @@ function CharacterCard({ char, onDelete, onSave, onRefresh }: { char: Character;
         </div>
         <div className="flex gap-1">
           <CopyButton text={spec} label={`char-${char.id}`} />
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => e.target.files?.[0] && handleSoulIdUpload(e.target.files[0])} />
           <Button
             variant="ghost"
             size="sm"
             className="h-7 text-xs gap-1 text-muted-foreground"
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
+            onClick={() => setShowSoulForm(!showSoulForm)}
             data-testid={`button-soul-id-${char.id}`}
           >
-            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-            {uploading ? "Uploading…" : "Soul ID"}
+            <Upload className="w-3 h-3" />
+            Soul ID
           </Button>
           <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={onSave} data-testid={`button-save-char-${char.id}`}>
             {char.saved ? "Saved" : "Save to Library"}
@@ -236,6 +232,20 @@ function CharacterCard({ char, onDelete, onSave, onRefresh }: { char: Character;
           </Button>
         </div>
       </div>
+      {showSoulForm && (
+        <div className="flex gap-2 mb-2">
+          <Input
+            value={soulImageUrl}
+            onChange={e => setSoulImageUrl(e.target.value)}
+            placeholder="Reference image URL (https://…)"
+            className="h-7 text-xs flex-1"
+          />
+          <Button size="sm" className="h-7 text-xs gap-1" onClick={handleCreateSoulId} disabled={!soulImageUrl.trim() || creatingSoul}>
+            {creatingSoul ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+            Create
+          </Button>
+        </div>
+      )}
       <pre className="text-xs text-muted-foreground font-mono bg-muted/50 rounded p-3 whitespace-pre-wrap">{spec}</pre>
     </Card>
   );
@@ -629,11 +639,11 @@ function ExportTab({ project, projectId, scenesData, promptsData, chars, allProm
         if (sceneImagePrompt?.generatedUrl) body.inputImage = sceneImagePrompt.generatedUrl;
       }
       const r = await apiRequest("POST", endpoint, body);
-      const data = await r.json() as { generationId?: string; error?: string };
+      const data = await r.json() as { requestId?: string; error?: string };
       if (data.error) throw new Error(data.error);
 
       // Poll until complete
-      const genId = data.generationId;
+      const genId = data.requestId;
       if (!genId) throw new Error("No generation ID returned");
 
       await new Promise<void>((resolve, reject) => {
@@ -826,7 +836,7 @@ function PromptCard({ prompt, onStatusChange, onRefresh }: { prompt: Prompt; onS
         model: prompt.model,
         prompt: prompt.promptText,
       });
-      const data = await r.json() as { generationId?: string; error?: string };
+      const data = await r.json() as { requestId?: string; error?: string };
       if (data.error) throw new Error(data.error);
       onRefresh();
     } catch (err: any) {

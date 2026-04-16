@@ -177,101 +177,156 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
-  // ─── Higgsfield API ───
+  // ─── Higgsfield API (real spec: platform.higgsfield.ai) ───
 
-  // Validate API key
+  // Helper: get API key from env first, then DB
+  async function getHiggsfieldKey(): Promise<string | undefined> {
+    return process.env.HIGGSFIELD_API_KEY || await storage.getSetting("higgsfield_api_key") || undefined;
+  }
+
+  // Model → endpoint mapping
+  const HF_BASE = "https://platform.higgsfield.ai";
+  function modelToEndpoint(model: string, genType: "image" | "video"): string {
+    if (genType === "video") {
+      // All video models route through image2video endpoints
+      if (["kling-3.0", "kling-2.6", "kling-2.1-pro", "kling-2.1-standard"].includes(model)) {
+        return "/requests/v1/image2video/dop";
+      }
+      return "/requests/v1/image2video/dop"; // default video endpoint
+    }
+    // Image generation endpoints
+    switch (model) {
+      case "flux-2-pro": return "/requests/flux-pro/kontext/max/text-to-image";
+      case "higgsfield-soul":
+      case "soul-character":
+      case "soul-reference":
+      case "soul-standard":
+      case "reve":
+        return "/requests/v1/text2image/soul";
+      default: return "/requests/flux-pro/kontext/max/text-to-image";
+    }
+  }
+
+  // Validate API key — GET /soul-ids returns 200 or 401, never 522
   app.post("/api/validate-key", async (req, res) => {
-    const { apiKey } = req.body;
-    if (!apiKey) return res.status(400).json({ valid: false, error: "No key provided" });
+    const key = req.body.apiKey;
+    if (!key) return res.status(400).json({ valid: false, error: "No key provided" });
     try {
-      const response = await fetch("https://api.higgsfield.ai/v1/generations", {
-        method: "GET",
-        headers: { "Authorization": `Bearer ${apiKey}` },
+      const response = await fetch(`${HF_BASE}/soul-ids?page=1&page_size=1`, {
+        headers: { "Authorization": `Bearer ${key}` },
       });
-      res.json({ valid: response.ok || response.status === 422 });
+      res.json({ valid: response.ok });
     } catch (err: any) {
       res.json({ valid: false, error: err.message });
     }
   });
 
-  // POST /api/generate/image — kicks off text-to-image, updates prompt record
+  // POST /api/generate/image
   app.post("/api/generate/image", async (req, res) => {
-    const apiKey = await storage.getSetting("higgsfield_api_key");
+    const apiKey = await getHiggsfieldKey();
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
 
-    const { promptId, model, prompt, width = 1280, height = 720 } = req.body;
+    const { promptId, model = "flux-2-pro", prompt, aspectRatio = "16:9", soulId, soulStrength = 1 } = req.body;
+    const endpoint = modelToEndpoint(model, "image");
+
+    const input: Record<string, unknown> = {
+      prompt,
+      aspect_ratio: aspectRatio,
+      model,
+    };
+    if (soulId) {
+      input.custom_reference_id = soulId;
+      input.custom_reference_strength = soulStrength;
+    }
 
     try {
-      const response = await fetch("https://api.higgsfield.ai/v1/generations", {
+      const response = await fetch(`${HF_BASE}${endpoint}`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "text-to-image", model: model || "flux-2-pro", prompt, width, height }),
+        body: JSON.stringify({ input }),
       });
       const data = await response.json() as any;
       if (!response.ok) return res.status(response.status).json({ error: data.message || data.error || "Higgsfield error" });
 
-      const generationId: string = data.id || data.generation_id;
+      const requestId: string = data.request_id || data.id;
       if (promptId) {
-        await storage.updatePrompt(Number(promptId), { status: "generating", generationId });
+        await storage.updatePrompt(Number(promptId), { status: "generating", generationId: requestId });
       }
-      res.json({ generationId, status: "generating" });
+      res.json({ requestId, status: "generating" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // POST /api/generate/video — kicks off image-to-video, updates prompt record
+  // POST /api/generate/video
   app.post("/api/generate/video", async (req, res) => {
-    const apiKey = await storage.getSetting("higgsfield_api_key");
+    const apiKey = await getHiggsfieldKey();
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
 
-    const { promptId, model, prompt, inputImage, duration = 5, fps = 24 } = req.body;
+    const { promptId, model = "kling-3.0", prompt, inputImageUrl, aspectRatio = "16:9" } = req.body;
+    const endpoint = modelToEndpoint(model, "video");
+
+    const input: Record<string, unknown> = {
+      prompt,
+      aspect_ratio: aspectRatio,
+      model,
+    };
+    if (inputImageUrl) {
+      input.input_images = [{ type: "image_url", image_url: inputImageUrl }];
+    }
 
     try {
-      const response = await fetch("https://api.higgsfield.ai/v1/generations", {
+      const response = await fetch(`${HF_BASE}${endpoint}`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "image-to-video", model: model || "kling-3.0-standard", prompt, input_image: inputImage, duration, fps }),
+        body: JSON.stringify({ input }),
       });
       const data = await response.json() as any;
       if (!response.ok) return res.status(response.status).json({ error: data.message || data.error || "Higgsfield error" });
 
-      const generationId: string = data.id || data.generation_id;
+      const requestId: string = data.request_id || data.id;
       if (promptId) {
-        await storage.updatePrompt(Number(promptId), { status: "generating", generationId });
+        await storage.updatePrompt(Number(promptId), { status: "generating", generationId: requestId });
       }
-      res.json({ generationId, status: "generating" });
+      res.json({ requestId, status: "generating" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // GET /api/generate/status/:genId — poll Higgsfield, update prompt if complete, optionally download asset
-  app.get("/api/generate/status/:genId", async (req, res) => {
-    const apiKey = await storage.getSetting("higgsfield_api_key");
+  // GET /api/generate/status/:requestId — poll GET /requests/{request_id}/status
+  app.get("/api/generate/status/:requestId", async (req, res) => {
+    const apiKey = await getHiggsfieldKey();
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
 
     const { promptId, projectId, sceneNumber, assetType } = req.query;
 
     try {
-      const response = await fetch(`https://api.higgsfield.ai/v1/generations/${req.params.genId}`, {
+      const response = await fetch(`${HF_BASE}/requests/${req.params.requestId}/status`, {
         headers: { "Authorization": `Bearer ${apiKey}` },
       });
       const data = await response.json() as any;
       if (!response.ok) return res.status(response.status).json({ error: data.message || "Higgsfield error" });
 
-      const status: string = data.status;
-      const outputUrl: string | undefined = data.output_url || data.url || data.result?.url;
+      // Real response: { status, request_id, images: [{url}], video: {url} }
+      const status: string = data.status; // queued | in_progress | completed | failed | nsfw | canceled
+      const outputUrl: string | undefined =
+        data.images?.[0]?.url ||
+        data.video?.url ||
+        undefined;
 
       if (status === "completed" && outputUrl && promptId) {
         await storage.updatePrompt(Number(promptId), { status: "complete", generatedUrl: outputUrl });
 
-        // Download asset to disk if project context is provided
         if (projectId && sceneNumber) {
-          const ext = (assetType === "video") ? "mp4" : "jpg";
+          const ext = assetType === "video" ? "mp4" : "jpg";
           const localPath = await downloadAsset(outputUrl, Number(projectId), Number(sceneNumber), ext);
           return res.json({ status, outputUrl, localPath });
         }
+      }
+
+      if (["failed", "nsfw", "canceled"].includes(status) && promptId) {
+        await storage.updatePrompt(Number(promptId), { status: "pending" }); // reset so user can retry
       }
 
       res.json({ status, outputUrl: outputUrl || null });
@@ -280,29 +335,27 @@ export async function registerRoutes(
     }
   });
 
-  // POST /api/upload/soul-id — upload reference image, returns soulId
-  app.post("/api/upload/soul-id", async (req, res) => {
-    const apiKey = await storage.getSetting("higgsfield_api_key");
+  // POST /api/create-soul-id — create Soul ID from reference image URLs
+  app.post("/api/create-soul-id", async (req, res) => {
+    const apiKey = await getHiggsfieldKey();
     if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
 
-    const { characterId, imageBase64, filename = "reference.jpg" } = req.body;
-    if (!imageBase64) return res.status(400).json({ error: "imageBase64 is required" });
+    const { characterId, name, imageUrls } = req.body;
+    if (!imageUrls?.length) return res.status(400).json({ error: "At least one image URL is required" });
 
     try {
-      const buffer = Buffer.from(imageBase64, "base64");
-      const formData = new FormData();
-      const blob = new Blob([buffer], { type: "image/jpeg" });
-      formData.append("file", blob, filename);
-
-      const response = await fetch("https://api.higgsfield.ai/v1/soul-id", {
+      const response = await fetch(`${HF_BASE}/soul-ids`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}` },
-        body: formData,
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name || "Character",
+          input_images: (imageUrls as string[]).map((url: string) => ({ type: "image_url", image_url: url })),
+        }),
       });
       const data = await response.json() as any;
-      if (!response.ok) return res.status(response.status).json({ error: data.message || "Soul ID upload failed" });
+      if (!response.ok) return res.status(response.status).json({ error: data.message || "Soul ID creation failed" });
 
-      const soulId: string = data.soul_id || data.id;
+      const soulId: string = data.id || data.soul_id;
       if (characterId && soulId) {
         await storage.updateCharacter(Number(characterId), { soulId });
       }
@@ -310,6 +363,26 @@ export async function registerRoutes(
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // GET /api/soul-ids — list all Soul IDs from Higgsfield
+  app.get("/api/soul-ids", async (_req, res) => {
+    const apiKey = await getHiggsfieldKey();
+    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
+    try {
+      const response = await fetch(`${HF_BASE}/soul-ids?page=1&page_size=20`, {
+        headers: { "Authorization": `Bearer ${apiKey}` },
+      });
+      const data = await response.json() as any;
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Keep legacy /api/upload/soul-id as alias
+  app.post("/api/upload/soul-id", async (req, res) => {
+    res.status(410).json({ error: "Deprecated. Use POST /api/create-soul-id with imageUrls array instead." });
   });
 
   // ─── Phase 2: Export + Webhooks ───
