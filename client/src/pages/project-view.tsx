@@ -15,7 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft, Plus, Copy, Check, Trash2, Wand2, ExternalLink,
-  Camera, Film, Clapperboard, FileText, Download, User, Loader2, Zap, Upload
+  Camera, Film, Clapperboard, FileText, Download, User, Loader2, Zap, Upload, Sparkles
 } from "lucide-react";
 
 // ─── Copy button helper ───
@@ -56,14 +56,46 @@ const GENRES = ["Action", "Adventure", "Comedy", "Drama", "Thriller", "Horror", 
 const BUDGETS = ["Low", "Medium", "High"];
 const ARCHETYPES = ["Innocent", "Everyman", "Hero", "Caregiver", "Explorer", "Rebel", "Lover", "Creator", "Jester", "Sage", "Magician", "Ruler"];
 
-function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated: () => void }) {
+function CharacterForm({ projectId, projectBrief, onCreated }: { projectId: number; projectBrief?: string; onCreated: () => void }) {
   const { toast } = useToast();
+  const [generating, setGenerating] = useState(false);
   const [form, setForm] = useState({
     name: "", genre: "Drama", budget: "Medium", era: "2020s", archetype: "Everyman",
     gender: "", ethnicity: "", ageRange: "", height: "", build: "",
     eyeColor: "", hair: "", facialHair: "", details: "", outfit: "",
+    personality: "", backstory: "",
   });
   const update = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
+
+  const handleGenerateFromBrief = async () => {
+    if (!projectBrief?.trim()) return;
+    setGenerating(true);
+    try {
+      const r = await apiRequest("POST", "/api/expand-brief", { brief: projectBrief });
+      const data = await r.json() as { suggestedCharacters?: Array<Record<string, string>> };
+      const char = data.suggestedCharacters?.[0];
+      if (!char) { toast({ title: "No characters suggested for this brief type" }); return; }
+      setForm(p => ({
+        ...p,
+        name: char.name || p.name,
+        genre: char.genre || p.genre,
+        archetype: char.archetype || p.archetype,
+        gender: char.gender || p.gender,
+        ethnicity: char.ethnicity || p.ethnicity,
+        ageRange: char.ageRange || p.ageRange,
+        build: char.build || p.build,
+        hair: char.hair || p.hair,
+        outfit: char.outfit || p.outfit,
+        personality: char.personality || p.personality,
+        backstory: char.backstory || p.backstory,
+      }));
+      toast({ title: "Character spec generated from brief" });
+    } catch (err: any) {
+      toast({ title: "Generation failed", description: err.message, variant: "destructive" });
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -73,7 +105,7 @@ function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated:
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "characters"] });
       onCreated();
-      setForm({ name: "", genre: "Drama", budget: "Medium", era: "2020s", archetype: "Everyman", gender: "", ethnicity: "", ageRange: "", height: "", build: "", eyeColor: "", hair: "", facialHair: "", details: "", outfit: "" });
+      setForm({ name: "", genre: "Drama", budget: "Medium", era: "2020s", archetype: "Everyman", gender: "", ethnicity: "", ageRange: "", height: "", build: "", eyeColor: "", hair: "", facialHair: "", details: "", outfit: "", personality: "", backstory: "" });
       toast({ title: "Character added" });
     },
     onError: (err: Error) => {
@@ -83,7 +115,15 @@ function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated:
 
   return (
     <Card className="p-4 border-border/50 space-y-4">
-      <h3 className="text-sm font-semibold">Add Character (Soul Cast Spec)</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Add Character — Soul Cast 3.0</h3>
+        {projectBrief && (
+          <Button variant="ghost" size="sm" className="h-7 text-xs gap-1.5 text-primary" onClick={handleGenerateFromBrief} disabled={generating}>
+            {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+            Generate from Brief
+          </Button>
+        )}
+      </div>
       <div className="grid grid-cols-3 gap-3">
         <div className="space-y-1.5">
           <Label className="text-xs">Name *</Label>
@@ -151,6 +191,14 @@ function CharacterForm({ projectId, onCreated }: { projectId: number; onCreated:
         <div className="space-y-1.5">
           <Label className="text-xs">Outfit</Label>
           <Input value={form.outfit} onChange={e => update("outfit", e.target.value)} placeholder="Casual streetwear..." className="h-8 text-sm" />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Personality</Label>
+          <Input value={form.personality} onChange={e => update("personality", e.target.value)} placeholder="Determined, Warm, Authentic" className="h-8 text-sm" />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Backstory</Label>
+          <Input value={form.backstory} onChange={e => update("backstory", e.target.value)} placeholder="1-sentence character backstory" className="h-8 text-sm" />
         </div>
       </div>
       <Button onClick={() => mutation.mutate()} disabled={!form.name.trim() || mutation.isPending} size="sm" className="gap-1.5" data-testid="button-add-character">
@@ -418,7 +466,7 @@ export default function ProjectView() {
 
         {/* ─── CHARACTERS TAB ─── */}
         <TabsContent value="characters" className="space-y-4 mt-4">
-          <CharacterForm projectId={projectId} onCreated={() => refetchChars()} />
+          <CharacterForm projectId={projectId} projectBrief={project.productDescription || project.name} onCreated={() => refetchChars()} />
           {chars.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground text-sm">
               <User className="w-8 h-8 mx-auto mb-2 opacity-40" />
@@ -635,8 +683,9 @@ function ExportTab({ project, projectId, scenesData, promptsData, chars, allProm
       const endpoint = type === "image" ? "/api/generate/image" : "/api/generate/video";
       const body: Record<string, unknown> = { promptId: prompt.id, model: prompt.model, prompt: prompt.promptText };
       if (type === "video" && prompt.sceneId) {
+        // Auto-chain: use the generated image for this scene as I2V input
         const sceneImagePrompt = promptsData.find(p2 => p2.sceneId === prompt.sceneId && p2.type === "image" && p2.generatedUrl);
-        if (sceneImagePrompt?.generatedUrl) body.inputImage = sceneImagePrompt.generatedUrl;
+        if (sceneImagePrompt?.generatedUrl) body.inputImageUrl = sceneImagePrompt.generatedUrl;
       }
       const r = await apiRequest("POST", endpoint, body);
       const data = await r.json() as { requestId?: string; error?: string };
@@ -831,7 +880,9 @@ function PromptCard({ prompt, onStatusChange, onRefresh }: { prompt: Prompt; onS
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      const r = await apiRequest("POST", "/api/generate/image", {
+      const isVideo = prompt.type === "video";
+      const endpoint = isVideo ? "/api/generate/video" : "/api/generate/image";
+      const r = await apiRequest("POST", endpoint, {
         promptId: prompt.id,
         model: prompt.model,
         prompt: prompt.promptText,

@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProjectSchema, insertCharacterSchema, insertSceneSchema, insertPromptSchema, insertPromptLibrarySchema } from "@shared/schema";
 import { generateScenes, generatePrompts } from "./prompt-engine";
+import { expandBrief } from "./brief-expander";
 import fs from "fs";
 import path from "path";
 import archiver from "archiver";
@@ -97,8 +98,9 @@ export async function registerRoutes(
       createdScenes.push(created);
     }
 
-    // Generate prompts from scenes
-    const promptTemplates = generatePrompts(project, createdScenes);
+    // Generate prompts from scenes (pass characters for Soul Cast injection)
+    const projectChars = await storage.getCharactersByProject(projectId);
+    const promptTemplates = generatePrompts(project, createdScenes, projectChars);
     for (const pt of promptTemplates) {
       await storage.createPrompt(pt);
     }
@@ -175,6 +177,18 @@ export async function registerRoutes(
     if (!key) return res.status(400).json({ error: "key is required" });
     await storage.setSetting(key, value || "");
     res.json({ ok: true });
+  });
+
+  // ─── Brief Expansion ───
+  app.post("/api/expand-brief", async (req, res) => {
+    const { brief } = req.body;
+    if (!brief?.trim()) return res.status(400).json({ error: "brief is required" });
+    try {
+      const expansion = await expandBrief(brief);
+      res.json(expansion);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ─── Higgsfield API (real spec: platform.higgsfield.ai) ───

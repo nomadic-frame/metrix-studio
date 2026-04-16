@@ -44,6 +44,8 @@ export const characters = sqliteTable("characters", {
   outfit: text("outfit").notNull().default(""),
   saved: integer("saved").notNull().default(0), // 0 or 1, for character library
   soulId: text("soul_id").notNull().default(""),
+  personality: text("personality").notNull().default(""),
+  backstory: text("backstory").notNull().default(""),
 });
 
 export const insertCharacterSchema = createInsertSchema(characters).omit({ id: true });
