@@ -65,23 +65,35 @@ function buildImagePrompt(
   return `${shotSize} ${angle} — ${subject}.${charSpec} ${scene.lighting}. Shot on ${scene.camera} with ${scene.lens}, ${scene.focalLength}. ${scene.aperture} depth of field. ${colorGrade}. ${scene.mood} atmosphere. Aspect ratio ${aspectRatio}. Photorealistic cinematic, ultra-sharp detail.`;
 }
 
-// ─── MCSLA Video Prompt Builder (I2V — motion only, no re-description) ───
-// Key rule: for I2V, prompt ONLY the motion, camera, and action. Never re-describe the input image.
-function buildVideoPrompt(scene: { movement: string; camera: string; lens: string; focalLength: string; aperture: string; lighting: string; mood: string }, model: string, aspectRatio: string): string {
+// ─── Video Prompt Builder (I2V — motion only, no content re-description) ───
+//
+// Seedance 2.0 formula (primary model):
+//   [Sequential action steps] → [Camera + motion] → [Scene & lighting] → [Quality guardrail]
+//   "Slow is Pro" — subtle continuous motion outperforms rapid action
+//   Include quality/guardrail clause to prevent distortion
+//
+// Kling 3.0 formula (precision / API):
+//   [Camera movement] → [Camera spec] → [Elements 3.0 @anchor] → [Motion preset]
+function buildVideoPrompt(
+  scene: { description: string; movement: string; camera: string; lens: string; focalLength: string; aperture: string; lighting: string; mood: string },
+  model: string,
+  aspectRatio: string
+): string {
   const dopPreset = pick(DOP_PRESETS);
 
-  if (model === "kling-3.0") {
-    // Kling 3.0: precise camera movement + Elements 3.0 cross-shot consistency
-    // @element_name locks subject identity across shots
-    return `Camera: ${scene.movement}. ${scene.camera}, ${scene.lens} ${scene.focalLength}. ${scene.aperture} bokeh. ${scene.lighting}. ${scene.mood} atmosphere. Motion preset: ${dopPreset}. @subject_anchor for cross-shot consistency. Aspect ratio ${aspectRatio}. Smooth, photorealistic motion.`;
-  }
-
   if (model === "seedance-2.0") {
-    // Seedance: "Slow is Pro" — subtle, sequential motion
-    return `${scene.movement}, slow and deliberate. ${scene.camera}, ${scene.lens}. ${scene.mood} atmosphere. Subtle continuous motion, no cuts. ${scene.lighting}. Aspect ratio ${aspectRatio}.`;
+    // Seedance 2.0: sequential action → camera → lighting → guardrail
+    // "Slow is Pro" — describe intent and emotional beat, not pixel-level detail
+    const action = scene.description.split(".")[0].trim();
+    return `${action}. Motion unfolds slowly and continuously — ${scene.movement}. ${scene.camera}, ${scene.lens}. ${scene.lighting}. ${scene.mood} atmosphere. No rapid cuts, no distortion, no morphing artifacts. Photorealistic, cinematic quality. Aspect ratio ${aspectRatio}.`;
   }
 
-  // Default
+  if (model === "kling-3.0") {
+    // Kling 3.0: precise camera control + Elements 3.0 @subject_anchor for cross-shot consistency
+    return `Camera: ${scene.movement}. ${scene.camera}, ${scene.lens} ${scene.focalLength}. ${scene.aperture} bokeh. ${scene.lighting}. ${scene.mood} atmosphere. Motion preset: ${dopPreset}. @subject_anchor. Aspect ratio ${aspectRatio}. Smooth, photorealistic motion.`;
+  }
+
+  // Default fallback
   return `${scene.movement}. ${scene.camera}, ${scene.lens}, ${scene.focalLength}. ${scene.lighting}. ${scene.mood} atmosphere. Aspect ratio ${aspectRatio}.`;
 }
 
@@ -104,11 +116,11 @@ function getProductAdScenes(project: Project): SceneTemplate[] {
   const product = project.productName || "product";
   const mood = project.moodKeywords || "premium, aspirational";
   return [
-    { description: `Wide establishing. ${product} on minimalist surface, lifestyle context. ${mood} world.`, camera: "ARRI Alexa 35", movement: "slow push-in", lens: "Cooke S7/i Spherical", focalLength: "35mm", aperture: "f/2.8", lighting: "soft natural window light", mood: "aspirational", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Wide establishing. ${product} on minimalist surface, lifestyle context. ${mood} world.`, camera: "ARRI Alexa 35", movement: "slow push-in", lens: "Cooke S7/i Spherical", focalLength: "35mm", aperture: "f/2.8", lighting: "soft natural window light", mood: "aspirational", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Extreme close-up of ${product} surface texture and detail. Craftsmanship isolated.`, camera: "Red V-Raptor", movement: "static", lens: "Zeiss Supreme Prime", focalLength: "100mm", aperture: "f/1.4", lighting: "studio three-point lighting", mood: "detail-focused", model: "kling-3.0", imageModel: "flux-2-pro" },
-    { description: `Character with ${product}, examining with genuine interest. Eye-level, authentic.`, camera: "Sony Venice 2", movement: "handheld", lens: "Hawk V-Lite Anamorphic", focalLength: "50mm", aperture: "f/2.0", lighting: "golden hour backlight", mood: "authentic", model: "kling-3.0", imageModel: "higgsfield-soul" },
-    { description: `B-roll: ${product} in natural use environment. Lifestyle context, the product's world.`, camera: "ARRI Alexa 35", movement: "tracking", lens: "Cooke S7/i Spherical", focalLength: "24mm", aperture: "f/4.0", lighting: "overcast diffused", mood: "editorial", model: "kling-3.0", imageModel: "flux-2-pro" },
-    { description: `Hands interacting with ${product}. Tactile moment showing key feature in action.`, camera: "Red V-Raptor", movement: "dolly", lens: "Zeiss Supreme Prime", focalLength: "85mm", aperture: "f/2.0", lighting: "soft natural window light", mood: "intimate", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Character with ${product}, examining with genuine interest. Eye-level, authentic.`, camera: "Sony Venice 2", movement: "handheld", lens: "Hawk V-Lite Anamorphic", focalLength: "50mm", aperture: "f/2.0", lighting: "golden hour backlight", mood: "authentic", model: "seedance-2.0", imageModel: "higgsfield-soul" },
+    { description: `B-roll: ${product} in natural use environment. Lifestyle context, the product's world.`, camera: "ARRI Alexa 35", movement: "tracking", lens: "Cooke S7/i Spherical", focalLength: "24mm", aperture: "f/4.0", lighting: "overcast diffused", mood: "editorial", model: "seedance-2.0", imageModel: "flux-2-pro" },
+    { description: `Hands interacting with ${product}. Tactile moment showing key feature in action.`, camera: "Red V-Raptor", movement: "dolly", lens: "Zeiss Supreme Prime", focalLength: "85mm", aperture: "f/2.0", lighting: "soft natural window light", mood: "intimate", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Hero reveal. ${product} centered, dramatic lighting, final beauty frame.`, camera: "ARRI Alexa 35", movement: "pull-back reveal", lens: "Hawk V-Lite Anamorphic", focalLength: "50mm", aperture: "f/2.8", lighting: "dramatic Rembrandt lighting", mood: "hero", model: "seedance-2.0", imageModel: "flux-2-pro" },
   ];
 }
@@ -117,11 +129,11 @@ function getCharacterBrandScenes(project: Project): SceneTemplate[] {
   const brand = project.productName || "brand";
   const mood = project.moodKeywords || "authentic, compelling";
   return [
-    { description: `Character introduction. Wide establishing their world. ${brand} context visible.`, camera: "ARRI Alexa 35", movement: "slow push-in", lens: "Cooke S7/i Spherical", focalLength: "35mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "cinematic", model: "kling-3.0", imageModel: "higgsfield-soul" },
-    { description: `Character close-up. Defining emotional moment. Direct gaze, raw presence.`, camera: "Red V-Raptor", movement: "static", lens: "Zeiss Supreme Prime", focalLength: "85mm", aperture: "f/1.4", lighting: "dramatic Rembrandt lighting", mood: "emotional", model: "kling-3.0", imageModel: "higgsfield-soul" },
+    { description: `Character introduction. Wide establishing their world. ${brand} context visible.`, camera: "ARRI Alexa 35", movement: "slow push-in", lens: "Cooke S7/i Spherical", focalLength: "35mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "cinematic", model: "seedance-2.0", imageModel: "higgsfield-soul" },
+    { description: `Character close-up. Defining emotional moment. Direct gaze, raw presence.`, camera: "Red V-Raptor", movement: "static", lens: "Zeiss Supreme Prime", focalLength: "85mm", aperture: "f/1.4", lighting: "dramatic Rembrandt lighting", mood: "emotional", model: "seedance-2.0", imageModel: "higgsfield-soul" },
     { description: `Character in full action. Dynamic movement showing personality. ${brand} integration.`, camera: "Sony Venice 2", movement: "steadicam", lens: "Hawk V-Lite Anamorphic", focalLength: "50mm", aperture: "f/2.0", lighting: "overcast diffused", mood, model: "seedance-2.0", imageModel: "higgsfield-soul" },
-    { description: `Environmental detail. Character's world — textures, objects, atmosphere telling story.`, camera: "ARRI Alexa 35", movement: "dolly", lens: "Cooke S7/i Spherical", focalLength: "24mm", aperture: "f/4.0", lighting: "soft natural window light", mood: "atmospheric", model: "kling-3.0", imageModel: "flux-2-pro" },
-    { description: `Transformation beat. Before/after or the turning point realization.`, camera: "Red V-Raptor", movement: "crane up", lens: "Zeiss Supreme Prime", focalLength: "50mm", aperture: "f/2.8", lighting: "moody chiaroscuro", mood: "transformative", model: "kling-3.0", imageModel: "higgsfield-soul" },
+    { description: `Environmental detail. Character's world — textures, objects, atmosphere telling story.`, camera: "ARRI Alexa 35", movement: "dolly", lens: "Cooke S7/i Spherical", focalLength: "24mm", aperture: "f/4.0", lighting: "soft natural window light", mood: "atmospheric", model: "seedance-2.0", imageModel: "flux-2-pro" },
+    { description: `Transformation beat. The turning point realization — character changes.`, camera: "Red V-Raptor", movement: "crane up", lens: "Zeiss Supreme Prime", focalLength: "50mm", aperture: "f/2.8", lighting: "moody chiaroscuro", mood: "transformative", model: "seedance-2.0", imageModel: "higgsfield-soul" },
     { description: `Final frame. Character and ${brand} united — resolution. Wide, epic, aspirational.`, camera: "ARRI Alexa 35", movement: "pull-back reveal", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "triumphant", model: "seedance-2.0", imageModel: "higgsfield-soul" },
   ];
 }
@@ -129,10 +141,10 @@ function getCharacterBrandScenes(project: Project): SceneTemplate[] {
 function getViralClipScenes(project: Project): SceneTemplate[] {
   const product = project.productName || "product";
   return [
-    { description: `HOOK: Scroll-stopping visual. ${product} teased. First 2 seconds must arrest attention.`, camera: "Sony Venice 2", movement: "whip pan", lens: "Zeiss Supreme Prime", focalLength: "24mm", aperture: "f/2.8", lighting: "neon-lit", mood: "attention-grabbing", model: "kling-3.0", imageModel: "flux-2-pro" },
-    { description: `Product reveal from unexpected angle. Fast energy. Text overlay zone clear.`, camera: "Red V-Raptor", movement: "handheld", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.0", lighting: "high-key flat lighting", mood: "energetic", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `HOOK: Scroll-stopping visual. ${product} teased. First 2 seconds must arrest attention.`, camera: "Sony Venice 2", movement: "whip pan", lens: "Zeiss Supreme Prime", focalLength: "24mm", aperture: "f/2.8", lighting: "neon-lit", mood: "attention-grabbing", model: "seedance-2.0", imageModel: "flux-2-pro" },
+    { description: `Product reveal from unexpected angle. Fast energy. Text overlay zone clear.`, camera: "Red V-Raptor", movement: "handheld", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.0", lighting: "high-key flat lighting", mood: "energetic", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Authentic use moment. Relatable reaction shot with ${product}.`, camera: "ARRI Alexa 35", movement: "static", lens: "Cooke S7/i Spherical", focalLength: "50mm", aperture: "f/2.0", lighting: "soft natural window light", mood: "relatable", model: "seedance-2.0", imageModel: "higgsfield-soul" },
-    { description: `Satisfying detail. Tactile close-up triggering visual ASMR.`, camera: "Red V-Raptor", movement: "slow push-in", lens: "Zeiss Supreme Prime", focalLength: "100mm", aperture: "f/1.4", lighting: "studio three-point lighting", mood: "satisfying", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Satisfying detail. Tactile close-up triggering visual ASMR.`, camera: "Red V-Raptor", movement: "slow push-in", lens: "Zeiss Supreme Prime", focalLength: "100mm", aperture: "f/1.4", lighting: "studio three-point lighting", mood: "satisfying", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Payoff shot. The "wow" transformation or final result moment.`, camera: "Sony Venice 2", movement: "dolly", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "triumphant", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `CTA frame. ${product} hero shot, clean space for text overlay and branding.`, camera: "ARRI Alexa 35", movement: "static", lens: "Cooke S7/i Spherical", focalLength: "50mm", aperture: "f/4.0", lighting: "high-key flat lighting", mood: "clean", model: "kling-3.0", imageModel: "flux-2-pro" },
   ];
@@ -142,15 +154,15 @@ function getCinematicFilmScenes(project: Project): SceneTemplate[] {
   const brand = project.productName || "brand";
   const mood = project.moodKeywords || "cinematic, emotional";
   return [
-    { description: `Opening wide. The world before the story. Atmospheric, weighted with possibility.`, camera: "ARRI Alexa 35", movement: "crane up", lens: "Hawk V-Lite Anamorphic", focalLength: "24mm", aperture: "f/2.8", lighting: "overcast diffused", mood: "atmospheric", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Opening wide. The world before the story. Atmospheric, weighted with possibility.`, camera: "ARRI Alexa 35", movement: "crane up", lens: "Hawk V-Lite Anamorphic", focalLength: "24mm", aperture: "f/2.8", lighting: "overcast diffused", mood: "atmospheric", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Character introduction. Medium with environmental storytelling. ${brand} world established.`, camera: "Red V-Raptor", movement: "steadicam", lens: "Cooke S7/i Spherical", focalLength: "50mm", aperture: "f/2.0", lighting: "soft natural window light", mood: "narrative", model: "seedance-2.0", imageModel: "higgsfield-soul" },
-    { description: `Inciting moment. Close-up on the emotional beat. Shallow depth, intimate.`, camera: "ARRI Alexa 35", movement: "slow push-in", lens: "Zeiss Supreme Prime", focalLength: "85mm", aperture: "f/1.4", lighting: "dramatic Rembrandt lighting", mood: "emotional", model: "kling-3.0", imageModel: "higgsfield-soul" },
+    { description: `Inciting moment. Close-up on the emotional beat. Shallow depth, intimate.`, camera: "ARRI Alexa 35", movement: "slow push-in", lens: "Zeiss Supreme Prime", focalLength: "85mm", aperture: "f/1.4", lighting: "dramatic Rembrandt lighting", mood: "emotional", model: "seedance-2.0", imageModel: "higgsfield-soul" },
     { description: `Rising action. Dynamic movement, energy building. Character moving through space.`, camera: "Sony Venice 2", movement: "tracking", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "dynamic", model: "seedance-2.0", imageModel: "higgsfield-soul" },
-    { description: `Tension peak. Contrasting light and frame. The challenge or confrontation.`, camera: "Red V-Raptor", movement: "handheld", lens: "Cooke S7/i Spherical", focalLength: "50mm", aperture: "f/2.0", lighting: "moody chiaroscuro", mood: "tense", model: "kling-3.0", imageModel: "higgsfield-soul" },
+    { description: `Tension peak. Contrasting light and frame. The challenge or confrontation.`, camera: "Red V-Raptor", movement: "handheld", lens: "Cooke S7/i Spherical", focalLength: "50mm", aperture: "f/2.0", lighting: "moody chiaroscuro", mood: "tense", model: "seedance-2.0", imageModel: "higgsfield-soul" },
     { description: `Turning point. Revelation moment. Camera language shifts — wider, more stable.`, camera: "ARRI Alexa 35", movement: "dolly", lens: "Zeiss Supreme Prime", focalLength: "35mm", aperture: "f/2.8", lighting: "soft natural window light", mood: "hopeful", model: "seedance-2.0", imageModel: "higgsfield-soul" },
-    { description: `${brand} integration. Product woven naturally into the narrative climax.`, camera: "Sony Venice 2", movement: "slow push-in", lens: "Hawk V-Lite Anamorphic", focalLength: "50mm", aperture: "f/2.0", lighting: "studio three-point lighting", mood: "premium", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `${brand} integration. Product woven naturally into the narrative climax.`, camera: "Sony Venice 2", movement: "slow push-in", lens: "Hawk V-Lite Anamorphic", focalLength: "50mm", aperture: "f/2.0", lighting: "studio three-point lighting", mood: "premium", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Resolution. Character transformed. Visual callback to opening — but different.`, camera: "ARRI Alexa 35", movement: "steadicam", lens: "Cooke S7/i Spherical", focalLength: "35mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "resolved", model: "seedance-2.0", imageModel: "higgsfield-soul" },
-    { description: `Closing wide. Mirror of opening. The world after the story. Same frame, new meaning.`, camera: "ARRI Alexa 35", movement: "pull-back reveal", lens: "Hawk V-Lite Anamorphic", focalLength: "24mm", aperture: "f/4.0", lighting: "overcast diffused", mood: "reflective", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Closing wide. Mirror of opening. The world after the story. Same frame, new meaning.`, camera: "ARRI Alexa 35", movement: "pull-back reveal", lens: "Hawk V-Lite Anamorphic", focalLength: "24mm", aperture: "f/4.0", lighting: "overcast diffused", mood: "reflective", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `End card. Brand mark or logo. Clean, minimal, impactful.`, camera: "Red V-Raptor", movement: "static", lens: "Zeiss Supreme Prime", focalLength: "50mm", aperture: "f/8.0", lighting: "high-key flat lighting", mood: "conclusive", model: "kling-3.0", imageModel: "flux-2-pro" },
   ];
 }
@@ -158,11 +170,11 @@ function getCinematicFilmScenes(project: Project): SceneTemplate[] {
 function get3DCommercialScenes(project: Project): SceneTemplate[] {
   const product = project.productName || "product";
   return [
-    { description: `Environment establishing. The ${product} world — abstract space introduction.`, camera: "Red V-Raptor", movement: "crane up", lens: "Hawk V-Lite Anamorphic", focalLength: "24mm", aperture: "f/4.0", lighting: "studio three-point lighting", mood: "immersive", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Environment establishing. The ${product} world — abstract space introduction.`, camera: "Red V-Raptor", movement: "crane up", lens: "Hawk V-Lite Anamorphic", focalLength: "24mm", aperture: "f/4.0", lighting: "studio three-point lighting", mood: "immersive", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `${product} materializes in environment. Elegant entrance. Floating or rotating reveal.`, camera: "ARRI Alexa 35", movement: "orbit", lens: "Zeiss Supreme Prime", focalLength: "50mm", aperture: "f/2.8", lighting: "dramatic Rembrandt lighting", mood: "reveal", model: "kling-3.0", imageModel: "flux-2-pro" },
     { description: `360° product rotation. Clean hero angle. Every surface, every material visible.`, camera: "Red V-Raptor", movement: "orbit", lens: "Cooke S7/i Spherical", focalLength: "85mm", aperture: "f/2.0", lighting: "studio three-point lighting", mood: "detail", model: "kling-3.0", imageModel: "flux-2-pro" },
-    { description: `Macro detail dive. Camera pushes into ${product} surface. Texture, material, craft.`, camera: "Sony Venice 2", movement: "slow push-in", lens: "Zeiss Supreme Prime", focalLength: "135mm", aperture: "f/1.4", lighting: "soft natural window light", mood: "intimate", model: "kling-3.0", imageModel: "flux-2-pro" },
-    { description: `Environment shift. ${product} in new context. Different world, same product.`, camera: "ARRI Alexa 35", movement: "whip pan", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.8", lighting: "neon-lit", mood: "dynamic", model: "kling-3.0", imageModel: "flux-2-pro" },
+    { description: `Macro detail dive. Camera pushes into ${product} surface. Texture, material, craft.`, camera: "Sony Venice 2", movement: "slow push-in", lens: "Zeiss Supreme Prime", focalLength: "135mm", aperture: "f/1.4", lighting: "soft natural window light", mood: "intimate", model: "seedance-2.0", imageModel: "flux-2-pro" },
+    { description: `Environment shift. ${product} in new context. Different world, same product.`, camera: "ARRI Alexa 35", movement: "whip pan", lens: "Hawk V-Lite Anamorphic", focalLength: "35mm", aperture: "f/2.8", lighting: "neon-lit", mood: "dynamic", model: "seedance-2.0", imageModel: "flux-2-pro" },
     { description: `Final hero frame. ${product} in ultimate beauty pose. Pull-back to full environment.`, camera: "Red V-Raptor", movement: "pull-back reveal", lens: "Cooke S7/i Spherical", focalLength: "50mm", aperture: "f/2.8", lighting: "golden hour backlight", mood: "epic", model: "seedance-2.0", imageModel: "flux-2-pro" },
   ];
 }
