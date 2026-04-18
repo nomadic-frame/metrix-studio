@@ -67,8 +67,8 @@ const SCHEMA = `{
   ]
 }`;
 
-export async function expandBrief(brief: string): Promise<BriefExpansion> {
-  const key = process.env.ANTHROPIC_API_KEY;
+export async function expandBrief(brief: string, anthropicKeyOverride?: string): Promise<BriefExpansion> {
+  const key = anthropicKeyOverride || process.env.ANTHROPIC_API_KEY;
   if (!key) return fallbackParse(brief);
 
   try {

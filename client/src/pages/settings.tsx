@@ -18,17 +18,21 @@ export default function SettingsPage() {
   });
 
   const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
   const [defaultAspectRatio, setDefaultAspectRatio] = useState("16:9");
   const [defaultDuration, setDefaultDuration] = useState("15s");
-  const [preferredModel, setPreferredModel] = useState("kling-3.0");
+  const [preferredModel, setPreferredModel] = useState("seedance-2.0");
   const [keyValid, setKeyValid] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (settings) {
       setApiKey(settings.higgsfield_api_key || "");
+      setApiSecret(settings.higgsfield_api_secret || "");
+      setAnthropicKey(settings.anthropic_api_key || "");
       setDefaultAspectRatio(settings.default_aspect_ratio || "16:9");
       setDefaultDuration(settings.default_duration || "15s");
-      setPreferredModel(settings.preferred_model || "kling-3.0");
+      setPreferredModel(settings.preferred_model || "seedance-2.0");
       setKeyValid(settings.higgsfield_api_key ? null : null);
     }
   }, [settings]);
@@ -40,7 +44,7 @@ export default function SettingsPage() {
       }
       // Validate key after saving
       if (apiKey) {
-        const r = await apiRequest("POST", "/api/validate-key", { apiKey });
+        const r = await apiRequest("POST", "/api/validate-key", { apiKey, apiSecret: apiSecret || undefined });
         return r.json();
       }
       return { valid: false };
@@ -58,6 +62,8 @@ export default function SettingsPage() {
   const handleSave = () => {
     saveMutation.mutate([
       { key: "higgsfield_api_key", value: apiKey },
+      { key: "higgsfield_api_secret", value: apiSecret },
+      { key: "anthropic_api_key", value: anthropicKey },
       { key: "default_aspect_ratio", value: defaultAspectRatio },
       { key: "default_duration", value: defaultDuration },
       { key: "preferred_model", value: preferredModel },
@@ -93,23 +99,63 @@ export default function SettingsPage() {
           )}
         </div>
         <p className="text-xs text-muted-foreground">
-          Required for API-available models (Flux 2 Pro, Kling 3.0, Soul ID, etc.). UI-only models (Seedance 2.0, Cinema Studio 2.5) don't need an API key.
+          Required for API-available models (Flux 2 Pro, Kling 3.0, Soul ID creation). Seedance 2.0 and Cinema Studio 3.0 are UI-only. When both Key + Secret are provided, uses Basic auth.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="apiKey" className="text-xs">API Key</Label>
+            <Input
+              id="apiKey"
+              type="password"
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              className="font-mono text-sm"
+              data-testid="input-api-key"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="apiSecret" className="text-xs">API Secret</Label>
+            <Input
+              id="apiSecret"
+              type="password"
+              value={apiSecret}
+              onChange={e => setApiSecret(e.target.value)}
+              placeholder="API secret from Higgsfield dashboard"
+              className="font-mono text-sm"
+              data-testid="input-api-secret"
+            />
+          </div>
+        </div>
+        <a href="https://platform.higgsfield.ai/account" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+          <ExternalLink className="w-3 h-3" /> Get credentials from Higgsfield platform
+        </a>
+      </Card>
+
+      {/* Anthropic (Brief AI) */}
+      <Card className="p-5 border-border/50 space-y-4">
+        <div className="flex items-center gap-2">
+          <Key className="w-4 h-4 text-primary" />
+          <h2 className="text-sm font-semibold">Anthropic API</h2>
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-auto">
+            {anthropicKey ? "Configured" : "Optional"}
+          </Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Powers the Quick Brief AI expansion (brief → full project fields + characters). Falls back to keyword parsing if not set.
         </p>
         <div className="space-y-2">
-          <Label htmlFor="apiKey" className="text-xs">API Key</Label>
+          <Label htmlFor="anthropicKey" className="text-xs">Anthropic API Key</Label>
           <Input
-            id="apiKey"
+            id="anthropicKey"
             type="password"
-            value={apiKey}
-            onChange={e => setApiKey(e.target.value)}
-            placeholder="hf_xxxxxxxxxxxxxxxxxxxx"
+            value={anthropicKey}
+            onChange={e => setAnthropicKey(e.target.value)}
+            placeholder="sk-ant-xxxxxxxxxxxxxxxxxxxx"
             className="font-mono text-sm"
-            data-testid="input-api-key"
+            data-testid="input-anthropic-key"
           />
         </div>
-        <a href="https://www.higgsfield.ai/account" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
-          <ExternalLink className="w-3 h-3" /> Get your API key from Higgsfield
-        </a>
       </Card>
 
       {/* Defaults */}

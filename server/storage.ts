@@ -39,6 +39,7 @@ export interface IStorage {
   deleteScenesByProject(projectId: number): Promise<void>;
 
   // Prompts
+  getPrompt(id: number): Promise<Prompt | undefined>;
   getPromptsByProject(projectId: number): Promise<Prompt[]>;
   getPromptsByScene(sceneId: number): Promise<Prompt[]>;
   createPrompt(data: InsertPrompt): Promise<Prompt>;
@@ -113,6 +114,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ─── Prompts ───
+  async getPrompt(id: number): Promise<Prompt | undefined> {
+    return db.select().from(prompts).where(eq(prompts.id, id)).get();
+  }
   async getPromptsByProject(projectId: number): Promise<Prompt[]> {
     return db.select().from(prompts).where(eq(prompts.projectId, projectId)).all();
   }

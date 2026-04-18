@@ -184,7 +184,9 @@ export async function registerRoutes(
     const { brief } = req.body;
     if (!brief?.trim()) return res.status(400).json({ error: "brief is required" });
     try {
-      const expansion = await expandBrief(brief);
+      // Read Anthropic key: env → DB (allows setting via Settings page)
+      const anthropicKey = process.env.ANTHROPIC_API_KEY || await storage.getSetting("anthropic_api_key") || undefined;
+      const expansion = await expandBrief(brief, anthropicKey);
       res.json(expansion);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -193,9 +195,24 @@ export async function registerRoutes(
 
   // ─── Higgsfield API (real spec: platform.higgsfield.ai) ───
 
-  // Helper: get API key from env first, then DB
-  async function getHiggsfieldKey(): Promise<string | undefined> {
-    return process.env.HIGGSFIELD_API_KEY || await storage.getSetting("higgsfield_api_key") || undefined;
+  // Helper: resolve Higgsfield credentials and build Authorization header
+  // Pattern: if both key + secret present → Basic base64(key:secret) (OAuth client_credentials)
+  //          if key only → Bearer key (legacy / developer token)
+  async function getHiggsfieldAuth(): Promise<{ header: string } | undefined> {
+    const key = process.env.HIGGSFIELD_API_KEY || await storage.getSetting("higgsfield_api_key") || "";
+    const secret = process.env.HIGGSFIELD_API_SECRET || await storage.getSetting("higgsfield_api_secret") || "";
+    if (!key) return undefined;
+    if (secret) {
+      const encoded = Buffer.from(`${key}:${secret}`).toString("base64");
+      return { header: `Basic ${encoded}` };
+    }
+    return { header: `Bearer ${key}` };
+  }
+
+  // Keep backward-compat helper for validate-key (takes explicit key)
+  function buildAuthHeader(key: string, secret?: string): string {
+    if (secret) return `Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`;
+    return `Bearer ${key}`;
   }
 
   // Model → endpoint mapping
@@ -221,33 +238,45 @@ export async function registerRoutes(
     }
   }
 
-  // Validate API key — GET /soul-ids returns 200 or 401, never 522
+  // Validate API key — tries Basic auth first (key+secret), falls back to Bearer (key only)
   app.post("/api/validate-key", async (req, res) => {
-    const key = req.body.apiKey;
-    if (!key) return res.status(400).json({ valid: false, error: "No key provided" });
+    const { apiKey, apiSecret } = req.body;
+    if (!apiKey) return res.status(400).json({ valid: false, error: "No key provided" });
     try {
+      // Try the auth pattern that matches what's stored
+      const authHeader = buildAuthHeader(apiKey, apiSecret || undefined);
       const response = await fetch(`${HF_BASE}/soul-ids?page=1&page_size=1`, {
-        headers: { "Authorization": `Bearer ${key}` },
+        headers: { "Authorization": authHeader },
       });
-      res.json({ valid: response.ok });
+      res.json({ valid: response.ok, authType: apiSecret ? "basic" : "bearer" });
     } catch (err: any) {
       res.json({ valid: false, error: err.message });
     }
   });
 
   // POST /api/generate/image
+  // Auto-resolves Soul ID from project characters when model is higgsfield-soul
   app.post("/api/generate/image", async (req, res) => {
-    const apiKey = await getHiggsfieldKey();
-    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
+    const auth = await getHiggsfieldAuth();
+    if (!auth) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
 
-    const { promptId, model = "flux-2-pro", prompt, aspectRatio = "16:9", soulId, soulStrength = 1 } = req.body;
+    const { promptId, model = "flux-2-pro", prompt, aspectRatio = "16:9", soulStrength = 1 } = req.body;
+    let { soulId } = req.body;
     const endpoint = modelToEndpoint(model, "image");
 
-    const input: Record<string, unknown> = {
-      prompt,
-      aspect_ratio: aspectRatio,
-      model,
-    };
+    // Auto-lookup Soul ID from character if model is higgsfield-soul and no soulId provided
+    if (!soulId && promptId && model === "higgsfield-soul") {
+      try {
+        const promptRow = await storage.getPrompt(Number(promptId));
+        if (promptRow?.projectId) {
+          const chars = await storage.getCharactersByProject(promptRow.projectId);
+          const charWithSoul = chars.find(c => c.soulId);
+          if (charWithSoul) soulId = charWithSoul.soulId;
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    const input: Record<string, unknown> = { prompt, aspect_ratio: aspectRatio, model };
     if (soulId) {
       input.custom_reference_id = soulId;
       input.custom_reference_strength = soulStrength;
@@ -256,7 +285,7 @@ export async function registerRoutes(
     try {
       const response = await fetch(`${HF_BASE}${endpoint}`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        headers: { "Authorization": auth.header, "Content-Type": "application/json" },
         body: JSON.stringify({ input }),
       });
       const data = await response.json() as any;
@@ -266,7 +295,7 @@ export async function registerRoutes(
       if (promptId) {
         await storage.updatePrompt(Number(promptId), { status: "generating", generationId: requestId });
       }
-      res.json({ requestId, status: "generating" });
+      res.json({ requestId, status: "generating", soulIdUsed: soulId || null });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -274,17 +303,13 @@ export async function registerRoutes(
 
   // POST /api/generate/video
   app.post("/api/generate/video", async (req, res) => {
-    const apiKey = await getHiggsfieldKey();
-    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
+    const auth = await getHiggsfieldAuth();
+    if (!auth) return res.status(400).json({ error: "Higgsfield API key not configured. Go to Settings." });
 
     const { promptId, model = "kling-3.0", prompt, inputImageUrl, aspectRatio = "16:9" } = req.body;
     const endpoint = modelToEndpoint(model, "video");
 
-    const input: Record<string, unknown> = {
-      prompt,
-      aspect_ratio: aspectRatio,
-      model,
-    };
+    const input: Record<string, unknown> = { prompt, aspect_ratio: aspectRatio, model };
     if (inputImageUrl) {
       input.input_images = [{ type: "image_url", image_url: inputImageUrl }];
     }
@@ -292,7 +317,7 @@ export async function registerRoutes(
     try {
       const response = await fetch(`${HF_BASE}${endpoint}`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        headers: { "Authorization": auth.header, "Content-Type": "application/json" },
         body: JSON.stringify({ input }),
       });
       const data = await response.json() as any;
@@ -308,26 +333,22 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/generate/status/:requestId — poll GET /requests/{request_id}/status
+  // GET /api/generate/status/:requestId
   app.get("/api/generate/status/:requestId", async (req, res) => {
-    const apiKey = await getHiggsfieldKey();
-    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
+    const auth = await getHiggsfieldAuth();
+    if (!auth) return res.status(400).json({ error: "Higgsfield API key not configured." });
 
     const { promptId, projectId, sceneNumber, assetType } = req.query;
 
     try {
       const response = await fetch(`${HF_BASE}/requests/${req.params.requestId}/status`, {
-        headers: { "Authorization": `Bearer ${apiKey}` },
+        headers: { "Authorization": auth.header },
       });
       const data = await response.json() as any;
       if (!response.ok) return res.status(response.status).json({ error: data.message || "Higgsfield error" });
 
-      // Real response: { status, request_id, images: [{url}], video: {url} }
       const status: string = data.status; // queued | in_progress | completed | failed | nsfw | canceled
-      const outputUrl: string | undefined =
-        data.images?.[0]?.url ||
-        data.video?.url ||
-        undefined;
+      const outputUrl: string | undefined = data.images?.[0]?.url || data.video?.url || undefined;
 
       if (status === "completed" && outputUrl && promptId) {
         await storage.updatePrompt(Number(promptId), { status: "complete", generatedUrl: outputUrl });
@@ -340,7 +361,7 @@ export async function registerRoutes(
       }
 
       if (["failed", "nsfw", "canceled"].includes(status) && promptId) {
-        await storage.updatePrompt(Number(promptId), { status: "pending" }); // reset so user can retry
+        await storage.updatePrompt(Number(promptId), { status: "pending" });
       }
 
       res.json({ status, outputUrl: outputUrl || null });
@@ -349,10 +370,10 @@ export async function registerRoutes(
     }
   });
 
-  // POST /api/create-soul-id — create Soul ID from reference image URLs
+  // POST /api/create-soul-id
   app.post("/api/create-soul-id", async (req, res) => {
-    const apiKey = await getHiggsfieldKey();
-    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
+    const auth = await getHiggsfieldAuth();
+    if (!auth) return res.status(400).json({ error: "Higgsfield API key not configured." });
 
     const { characterId, name, imageUrls } = req.body;
     if (!imageUrls?.length) return res.status(400).json({ error: "At least one image URL is required" });
@@ -360,7 +381,7 @@ export async function registerRoutes(
     try {
       const response = await fetch(`${HF_BASE}/soul-ids`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        headers: { "Authorization": auth.header, "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name || "Character",
           input_images: (imageUrls as string[]).map((url: string) => ({ type: "image_url", image_url: url })),
@@ -379,13 +400,13 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/soul-ids — list all Soul IDs from Higgsfield
+  // GET /api/soul-ids
   app.get("/api/soul-ids", async (_req, res) => {
-    const apiKey = await getHiggsfieldKey();
-    if (!apiKey) return res.status(400).json({ error: "Higgsfield API key not configured." });
+    const auth = await getHiggsfieldAuth();
+    if (!auth) return res.status(400).json({ error: "Higgsfield API key not configured." });
     try {
       const response = await fetch(`${HF_BASE}/soul-ids?page=1&page_size=20`, {
-        headers: { "Authorization": `Bearer ${apiKey}` },
+        headers: { "Authorization": auth.header },
       });
       const data = await response.json() as any;
       res.json(data);
